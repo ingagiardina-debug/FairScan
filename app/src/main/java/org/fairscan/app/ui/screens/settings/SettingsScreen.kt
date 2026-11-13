@@ -58,6 +58,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import org.fairscan.app.R
 import org.fairscan.app.data.OcrLanguage
+import org.fairscan.app.data.OcrModel
 import org.fairscan.app.domain.ExportQuality
 import org.fairscan.app.ui.Navigation
 import org.fairscan.app.ui.components.BackButton
@@ -75,6 +76,8 @@ fun SettingsScreen(
     onExportQualityChanged: (ExportQuality) -> Unit,
     onDefaultFileNameStyleChanged: (DefaultFilenameStyle) -> Unit,
     navigation: Navigation,
+    onOcrModelChanged: (OcrModel) -> Unit = {},
+    onCancelOcrDownload: () -> Unit = {},
 ) {
     BackHandler { navigation.back() }
     Scaffold(
@@ -94,7 +97,14 @@ fun SettingsScreen(
             onExportQualityChanged,
             onDefaultFileNameStyleChanged,
             navigation,
+            onOcrModelChanged,
             modifier = Modifier.padding(paddingValues),
+        )
+    }
+    uiState.currentDownload?.let { download ->
+        OcrDownloadDialog(
+            state = download,
+            onCancel = onCancelOcrDownload,
         )
     }
 }
@@ -109,6 +119,7 @@ private fun SettingsContent(
     onExportQualityChanged: (ExportQuality) -> Unit,
     onDefaultFileNameStyleChanged: (DefaultFilenameStyle) -> Unit,
     navigation: Navigation,
+    onOcrModelChanged: (OcrModel) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val displayLocale = Locale.current.platformLocale
@@ -219,6 +230,19 @@ private fun SettingsContent(
                 )
             },
             modifier = Modifier.clickable { navigation.toOcrLanguagesScreen() }
+        )
+
+        SingleChoiceSetting(
+            title = stringResource(R.string.settings_ocr_model),
+            entries = OcrModel.entries,
+            selectedValue = uiState.ocrModel,
+            onValueChanged = onOcrModelChanged,
+            label = { model ->
+                when (model) {
+                    OcrModel.FAST -> context.getString(R.string.settings_ocr_model_fast)
+                    OcrModel.BEST -> context.getString(R.string.settings_ocr_model_best)
+                }
+            },
         )
     }
 }

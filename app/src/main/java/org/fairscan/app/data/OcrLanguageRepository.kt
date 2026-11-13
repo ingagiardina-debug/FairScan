@@ -17,10 +17,14 @@ package org.fairscan.app.data
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
@@ -33,11 +37,13 @@ import java.security.MessageDigest
 
 class OcrLanguageRepository(
     private val dataStore: DataStore<Preferences>,
-    val tessdataDir: File,
+    /** The app's files dir; each [OcrModel] stores its files in its own subdirectory. */
+    private val filesDir: File,
 ) {
 
     companion object {
         private val ENABLED_LANGUAGES = stringSetPreferencesKey("enabled_ocr_languages")
+        private val OCR_MODEL = stringPreferencesKey("ocr_model")
     }
 
     val enabledLanguages: Flow<Set<String>> =
@@ -45,8 +51,26 @@ class OcrLanguageRepository(
             prefs[ENABLED_LANGUAGES] ?: emptySet()
         }
 
-    suspend fun getInstalledLanguages(): Set<String> =
+    val ocrModel: Flow<OcrModel> =
+        dataStore.data.map { prefs -> OcrModel.fromName(prefs[OCR_MODEL]) }.distinctUntilChanged()
+
+    /** Incremented whenever language files are added or removed, so OCR can reload them. */
+    private val _filesVersion = MutableStateFlow(0)
+    val filesVersion: StateFlow<Int> = _filesVersion
+
+    suspend fun currentModel(): OcrModel = ocrModel.first()
+
+    suspend fun setOcrModel(model: OcrModel) {
+        dataStore.edit { prefs -> prefs[OCR_MODEL] = model.name }
+    }
+
+    fun tessdataDir(model: OcrModel): File = File(filesDir, "${model.dirName}/tessdata")
+
+    suspend fun getInstalledLanguages(): Set<String> = getInstalledLanguages(currentModel())
+
+    suspend fun getInstalledLanguages(model: OcrModel): Set<String> =
         withContext(Dispatchers.IO) {
+            val tessdataDir = tessdataDir(model)
             if (!tessdataDir.exists()) {
                 return@withContext emptySet()
             }
@@ -88,68 +112,79 @@ class OcrLanguageRepository(
         val totalBytes: Long?,
     )
 
+    /** Downloads [code] for the currently selected [OcrModel]. */
     suspend fun downloadLanguage(code: String, onProgress: (DownloadProgress) -> Unit) =
-        withContext(Dispatchers.IO) {
-            require(code in AVAILABLE_LANGUAGE_CODES)
-            val expected = OCR_FILE_HASHES[code]
-                ?: throw IOException("No pinned hash for OCR language $code")
-            tessdataDir.mkdirs()
+        downloadLanguage(code, currentModel(), onProgress)
 
-            // Pinned to an exact commit so the content cannot change under us.
-            val url = URL("https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/$TESSDATA_COMMIT/$code.traineddata")
-            val targetFile = File(tessdataDir, "$code.traineddata")
-            val tempFile = File(tessdataDir, "$code.download")
+    suspend fun downloadLanguage(
+        code: String,
+        model: OcrModel,
+        onProgress: (DownloadProgress) -> Unit,
+    ) = withContext(Dispatchers.IO) {
+        require(code in AVAILABLE_LANGUAGE_CODES)
+        val expected = model.hashes[code]
+            ?: throw IOException("No pinned hash for OCR language $code (${model.name})")
+        val tessdataDir = tessdataDir(model)
+        tessdataDir.mkdirs()
 
-            val connection = (url.openConnection() as HttpURLConnection)
-            try {
-                connection.requestMethod = "GET"
-                connection.connectTimeout = 15_000
-                connection.readTimeout = 30_000
-                connection.instanceFollowRedirects = true
-                connection.connect()
-                if (connection.responseCode != HttpURLConnection.HTTP_OK) {
-                    throw IOException("HTTP ${connection.responseCode}")
-                }
-                // Git blob hash: SHA-1 over "blob <size>\0" followed by the file content.
-                val digest = MessageDigest.getInstance("SHA-1")
-                digest.update("blob ${expected.size}\u0000".toByteArray(Charsets.US_ASCII))
-                var downloadedBytes = 0L
-                connection.inputStream.use { input ->
-                    tempFile.outputStream().use { output ->
-                        val buffer = ByteArray(8192)
-                        while (true) {
-                            coroutineContext.ensureActive()
-                            val read = input.read(buffer)
-                            if (read < 0) break
-                            downloadedBytes += read
-                            if (downloadedBytes > expected.size) {
-                                throw IOException("Downloaded file larger than expected")
-                            }
-                            output.write(buffer, 0, read)
-                            digest.update(buffer, 0, read)
-                            onProgress(DownloadProgress(downloadedBytes, expected.size))
+        // Pinned to an exact commit so the content cannot change under us.
+        val url = URL(model.downloadUrl(code))
+        val targetFile = File(tessdataDir, "$code.traineddata")
+        val tempFile = File(tessdataDir, "$code.download")
+
+        val connection = (url.openConnection() as HttpURLConnection)
+        try {
+            connection.requestMethod = "GET"
+            connection.connectTimeout = 15_000
+            connection.readTimeout = 30_000
+            connection.instanceFollowRedirects = true
+            connection.connect()
+            if (connection.responseCode != HttpURLConnection.HTTP_OK) {
+                throw IOException("HTTP ${connection.responseCode}")
+            }
+            // Git blob hash: SHA-1 over "blob <size>\0" followed by the file content.
+            val digest = MessageDigest.getInstance("SHA-1")
+            digest.update("blob ${expected.size}\u0000".toByteArray(Charsets.US_ASCII))
+            var downloadedBytes = 0L
+            connection.inputStream.use { input ->
+                tempFile.outputStream().use { output ->
+                    val buffer = ByteArray(8192)
+                    while (true) {
+                        coroutineContext.ensureActive()
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        downloadedBytes += read
+                        if (downloadedBytes > expected.size) {
+                            throw IOException("Downloaded file larger than expected")
                         }
+                        output.write(buffer, 0, read)
+                        digest.update(buffer, 0, read)
+                        onProgress(DownloadProgress(downloadedBytes, expected.size))
                     }
                 }
-                if (downloadedBytes != expected.size) {
-                    throw IOException("Downloaded file has wrong size")
-                }
-                val actualHash = digest.digest().joinToString("") { "%02x".format(it) }
-                if (actualHash != expected.gitBlobSha1) {
-                    throw IOException("Downloaded file failed integrity check")
-                }
-                if (!tempFile.renameTo(targetFile)) {
-                    throw IOException("Failed to move downloaded file")
-                }
-            } finally {
-                connection.disconnect()
-                tempFile.delete()
             }
+            if (downloadedBytes != expected.size) {
+                throw IOException("Downloaded file has wrong size")
+            }
+            val actualHash = digest.digest().joinToString("") { "%02x".format(it) }
+            if (actualHash != expected.gitBlobSha1) {
+                throw IOException("Downloaded file failed integrity check")
+            }
+            if (!tempFile.renameTo(targetFile)) {
+                throw IOException("Failed to move downloaded file")
+            }
+            _filesVersion.value++
+        } finally {
+            connection.disconnect()
+            tempFile.delete()
         }
+    }
 
+    /** Deletes [code] for the currently selected model only. */
     suspend fun deleteLanguage(code: String) {
-        val file = File(tessdataDir, "$code.traineddata")
+        val file = File(tessdataDir(currentModel()), "$code.traineddata")
         file.delete()
+        _filesVersion.value++
         setLanguageEnabled(code, false)
     }
 

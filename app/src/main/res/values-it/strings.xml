@@ -73,6 +73,9 @@
     <string name="settings_ocr_languages_disabled">Disattivato</string>
     <string name="settings_ocr_languages_installed">Installate</string>
     <string name="settings_ocr_suggested">Suggerito</string>
+    <string name="settings_ocr_model">Qualità del riconoscimento</string>
+    <string name="settings_ocr_model_fast">Veloce (file più piccoli)</string>
+    <string name="settings_ocr_model_best">Migliore (più preciso, file più grandi)</string>
     <string name="settings_section_ocr">Riconoscimento del testo</string>
     <string name="settings_section_scan">Scansione</string>
     <string name="settings_section_export">Esportazione</string>

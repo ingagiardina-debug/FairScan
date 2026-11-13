@@ -58,7 +58,7 @@ class AppContainer(context: Context) {
     private val dataStore = context.dataStore
     val preparationDir = File(context.cacheDir, "pdfs")
     val ocrLanguageRepository =
-        OcrLanguageRepository(dataStore, File(context.filesDir, "tesseract/tessdata"))
+        OcrLanguageRepository(dataStore, context.filesDir)
     val ocrService = OcrService(ocrLanguageRepository, scope)
     val fileManager = FileManager(
         preparationDir,

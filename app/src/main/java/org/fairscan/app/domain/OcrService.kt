@@ -19,10 +19,12 @@ import android.graphics.Rect
 import com.googlecode.tesseract.android.TessBaseAPI
 import com.googlecode.tesseract.android.TessBaseAPI.PageIteratorLevel
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.fairscan.app.data.OcrLanguageRepository
+import org.fairscan.app.data.OcrModel
 import org.fairscan.imageprocessing.ImageRect
 import org.fairscan.imageprocessing.OcrTextBox
 
@@ -39,11 +41,16 @@ class OcrService(
 
     fun initialize() {
         scope.launch {
-            ocrLanguageRepository.enabledLanguages.collect { _ -> reinitialize() }
+            combine(
+                ocrLanguageRepository.enabledLanguages,
+                ocrLanguageRepository.ocrModel,
+                ocrLanguageRepository.filesVersion,
+            ) { _, model, _ -> model }
+                .collect { model -> reinitialize(model) }
         }
     }
 
-    private suspend fun reinitialize() {
+    private suspend fun reinitialize(model: OcrModel) {
         mutex.withLock {
             tess?.recycle()
             tess = null
@@ -51,7 +58,7 @@ class OcrService(
             languageString = ocrLanguageRepository.buildTesseractLanguageString()
             if (languageString.isEmpty()) return
 
-            val dataPath = ocrLanguageRepository.tessdataDir.parent!!
+            val dataPath = ocrLanguageRepository.tessdataDir(model).parent!!
             val newTess = TessBaseAPI()
             if (!newTess.init(dataPath, languageString)) {
                 newTess.recycle()

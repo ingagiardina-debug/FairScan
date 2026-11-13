@@ -158,6 +158,12 @@
     <string name="settings_ocr_languages_installed">Installed</string>
     <!-- OCR Languages screen. Marks the language matching the user's display language. At most one language is suggested. -->
     <string name="settings_ocr_suggested">Suggested</string>
+    <!-- Settings screen: choice between small/quick and large/accurate OCR language files -->
+    <string name="settings_ocr_model">Recognition quality</string>
+    <!-- Settings screen: OCR quality option -->
+    <string name="settings_ocr_model_fast">Fast (smaller files)</string>
+    <!-- Settings screen: OCR quality option -->
+    <string name="settings_ocr_model_best">Best (more accurate, larger files)</string>
     <!-- Settings screen: section title -->
     <string name="settings_section_ocr">Text recognition</string>
     <!-- Settings screen: section title -->

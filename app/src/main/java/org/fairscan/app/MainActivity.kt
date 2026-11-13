@@ -330,6 +330,8 @@ class MainActivity : ComponentActivity() {
             onExportQualityChanged = { quality -> settingsViewModel.setExportQuality(quality) },
             onDefaultFileNameStyleChanged = settingsViewModel::setDefaultFilenameStyle,
             navigation = nav,
+            onOcrModelChanged = settingsViewModel::setOcrModel,
+            onCancelOcrDownload = settingsViewModel::cancelOcrDownload,
         )
     }
 

@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import org.fairscan.app.AppContainer
 import org.fairscan.app.data.OcrLanguage
+import org.fairscan.app.data.OcrModel
 import org.fairscan.app.domain.ExportQuality
 
 data class SettingsUiState(
@@ -34,7 +35,14 @@ data class SettingsUiState(
     val export: ExportSettingsUiState = ExportSettingsUiState(),
     val installedOcrLanguages: Set<String> = emptySet(),
     val enabledOcrLanguages: Set<String> = emptySet(),
+    val ocrModel: OcrModel = OcrModel.FAST,
     val currentDownload: OcrDownloadUiState? = null
+)
+
+private data class OcrSettingsState(
+    val installed: Set<String>,
+    val enabled: Set<String>,
+    val model: OcrModel,
 )
 
 data class ExportSettingsUiState(
@@ -76,18 +84,25 @@ class SettingsViewModel(container: AppContainer) : ViewModel() {
             dirUri, dirName, format, quality, filenameStyle ->
             ExportSettingsUiState(dirUri, dirName, format, quality, filenameStyle)
         }
+    private val ocrSettingsState =
+        combine(
+            _installedLanguages,
+            ocrLanguageRepo.enabledLanguages,
+            ocrLanguageRepo.ocrModel,
+        ) { installed, enabled, model -> OcrSettingsState(installed, enabled, model) }
+
     val uiState = combine(
         repo.defaultColorMode,
         exportSettingsState,
-        _installedLanguages,
-        ocrLanguageRepo.enabledLanguages,
+        ocrSettingsState,
         _ocrDownload,
-    ) { colorMode, exportSettings, installed, enabled, download ->
+    ) { colorMode, exportSettings, ocr, download ->
         SettingsUiState(
             defaultColorMode = colorMode,
             export = exportSettings,
-            installedOcrLanguages = installed,
-            enabledOcrLanguages = enabled,
+            installedOcrLanguages = ocr.installed,
+            enabledOcrLanguages = ocr.enabled,
+            ocrModel = ocr.model,
             currentDownload = download,
         )
     }.stateIn(
@@ -156,24 +171,48 @@ class SettingsViewModel(container: AppContainer) : ViewModel() {
     fun installLanguage(code: String) {
         downloadJob?.cancel()
         downloadJob = viewModelScope.launch {
-            _ocrDownload.value = OcrDownloadUiState(OcrLanguage(code))
-            try {
-                ocrLanguageRepo.downloadLanguage(code) { progress ->
-                    _ocrDownload.value =
-                        _ocrDownload.value?.copy(
-                            downloadedBytes = progress.downloadedBytes,
-                            totalBytes = progress.totalBytes,
-                        )
-                }
-                ocrLanguageRepo.setLanguageEnabled(code, true)
-                refreshInstalledLanguages()
-                _ocrDownload.value = null
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                logger.e("OcrDownload", "Download failed for $code", e)
-                _ocrDownload.value = _ocrDownload.value?.copy(failed = true)
+            downloadOne(code, ocrLanguageRepo.currentModel())
+        }
+    }
+
+    /**
+     * Switches between Fast and Best language files. Languages already enabled are
+     * downloaded for the new model if needed, one after the other.
+     */
+    fun setOcrModel(model: OcrModel) {
+        downloadJob?.cancel()
+        _ocrDownload.value = null
+        downloadJob = viewModelScope.launch {
+            ocrLanguageRepo.setOcrModel(model)
+            refreshInstalledLanguages()
+            val missing = ocrLanguageRepo.enabledLanguages.first() - _installedLanguages.value
+            for (code in missing.sorted()) {
+                if (!downloadOne(code, model)) break
             }
+        }
+    }
+
+    /** Returns true on success; on failure the download dialog shows the error. */
+    private suspend fun downloadOne(code: String, model: OcrModel): Boolean {
+        _ocrDownload.value = OcrDownloadUiState(OcrLanguage(code))
+        return try {
+            ocrLanguageRepo.downloadLanguage(code, model) { progress ->
+                _ocrDownload.value =
+                    _ocrDownload.value?.copy(
+                        downloadedBytes = progress.downloadedBytes,
+                        totalBytes = progress.totalBytes,
+                    )
+            }
+            ocrLanguageRepo.setLanguageEnabled(code, true)
+            refreshInstalledLanguages()
+            _ocrDownload.value = null
+            true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logger.e("OcrDownload", "Download failed for $code (${model.name})", e)
+            _ocrDownload.value = _ocrDownload.value?.copy(failed = true)
+            false
         }
     }
 
