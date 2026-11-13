@@ -1,5 +1,7 @@
 import com.android.build.api.variant.FilterConfiguration
+import java.io.File
 import java.net.URL
+import java.security.MessageDigest
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.tasks.OutputDirectory
@@ -14,21 +16,47 @@ abstract class DownloadTFLiteModelTask : DefaultTask() {
         val modelVersion = "v1.2.0"
         val modelFileName = "fairscan-segmentation-model.tflite"
         val modelUrl = "https://github.com/pynicolas/fairscan-segmentation-model/releases/download/$modelVersion/$modelFileName"
+        // SHA-256 published by GitHub for this release asset. Update together with modelVersion.
+        val modelSha256 = "96e14d7e610dd0c27b768b228fbc553b4ec119ebe68f3a3594029a25400691d2"
 
         val outputFile = outputDirectory.file(modelFileName).get().asFile
 
         if (!outputFile.exists()) {
             println("Downloading $modelFileName from $modelUrl")
             outputFile.parentFile.mkdirs()
+            val tempFile = File(outputFile.parentFile, "$modelFileName.part")
 
             URL(modelUrl).openStream().use { input ->
-                outputFile.outputStream().use { output ->
+                tempFile.outputStream().use { output ->
                     input.copyTo(output)
                 }
             }
+            val actual = sha256(tempFile)
+            if (actual != modelSha256) {
+                tempFile.delete()
+                throw GradleException("$modelFileName checksum mismatch: expected $modelSha256, got $actual")
+            }
+            tempFile.renameTo(outputFile)
         } else {
-            println("Model already downloaded: ${outputFile.absolutePath}")
+            val actual = sha256(outputFile)
+            if (actual != modelSha256) {
+                throw GradleException("$modelFileName checksum mismatch: expected $modelSha256, got $actual. Delete ${outputFile.absolutePath} and rebuild.")
+            }
+            println("Model already downloaded and verified: ${outputFile.absolutePath}")
         }
+    }
+
+    private fun sha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(8192)
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                digest.update(buffer, 0, read)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 }
 

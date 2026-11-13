@@ -3,9 +3,10 @@
     <cache-path
         name="pdfs"
         path="pdfs/" />
+    <!-- Only the public Downloads folder, where exported files are saved -->
     <external-path
         name="external_files"
-        path="." />
+        path="Download/" />
     <!-- source images (to send the last captured image) -->
     <files-path
         name="sources"

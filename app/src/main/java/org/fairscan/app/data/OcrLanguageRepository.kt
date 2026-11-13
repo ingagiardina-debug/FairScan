@@ -29,6 +29,7 @@ import java.io.File
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 
 class OcrLanguageRepository(
     private val dataStore: DataStore<Preferences>,
@@ -90,9 +91,12 @@ class OcrLanguageRepository(
     suspend fun downloadLanguage(code: String, onProgress: (DownloadProgress) -> Unit) =
         withContext(Dispatchers.IO) {
             require(code in AVAILABLE_LANGUAGE_CODES)
+            val expected = OCR_FILE_HASHES[code]
+                ?: throw IOException("No pinned hash for OCR language $code")
             tessdataDir.mkdirs()
 
-            val url = URL("https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/$code.traineddata")
+            // Pinned to an exact commit so the content cannot change under us.
+            val url = URL("https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/$TESSDATA_COMMIT/$code.traineddata")
             val targetFile = File(tessdataDir, "$code.traineddata")
             val tempFile = File(tessdataDir, "$code.download")
 
@@ -106,27 +110,33 @@ class OcrLanguageRepository(
                 if (connection.responseCode != HttpURLConnection.HTTP_OK) {
                     throw IOException("HTTP ${connection.responseCode}")
                 }
+                // Git blob hash: SHA-1 over "blob <size>\0" followed by the file content.
+                val digest = MessageDigest.getInstance("SHA-1")
+                digest.update("blob ${expected.size}\u0000".toByteArray(Charsets.US_ASCII))
+                var downloadedBytes = 0L
                 connection.inputStream.use { input ->
                     tempFile.outputStream().use { output ->
-                        val totalBytes = connection.contentLengthLong.takeIf { it > 0 }
                         val buffer = ByteArray(8192)
-                        var downloadedBytes = 0L
-                        input.use { input ->
-                            tempFile.outputStream().use { output ->
-                                while (true) {
-                                    coroutineContext.ensureActive()
-                                    val read = input.read(buffer)
-                                    if (read < 0) break
-                                    output.write(buffer, 0, read)
-                                    downloadedBytes += read
-                                    onProgress(DownloadProgress(downloadedBytes, totalBytes))
-                                }
+                        while (true) {
+                            coroutineContext.ensureActive()
+                            val read = input.read(buffer)
+                            if (read < 0) break
+                            downloadedBytes += read
+                            if (downloadedBytes > expected.size) {
+                                throw IOException("Downloaded file larger than expected")
                             }
+                            output.write(buffer, 0, read)
+                            digest.update(buffer, 0, read)
+                            onProgress(DownloadProgress(downloadedBytes, expected.size))
                         }
                     }
                 }
-                if (tempFile.length() < 300_000) {
-                    throw IOException("Downloaded file too small")
+                if (downloadedBytes != expected.size) {
+                    throw IOException("Downloaded file has wrong size")
+                }
+                val actualHash = digest.digest().joinToString("") { "%02x".format(it) }
+                if (actualHash != expected.gitBlobSha1) {
+                    throw IOException("Downloaded file failed integrity check")
                 }
                 if (!tempFile.renameTo(targetFile)) {
                     throw IOException("Failed to move downloaded file")
